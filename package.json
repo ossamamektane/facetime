@@ -1,0 +1,15 @@
+{
+  "name": "calls",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "setup": "expo install react react-native expo-status-bar expo-font expo-splash-screen expo-system-ui react-native-safe-area-context react-native-webview expo-file-system expo-symbols && expo install --fix",
+    "web": "node scripts/make-web.js",
+    "start": "expo start",
+    "check": "expo-doctor"
+  },
+  "dependencies": {
+    "expo": "~57.0.0"
+  }
+}
