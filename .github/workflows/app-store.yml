@@ -1,40 +1,125 @@
-name: Send Calls app to App Store
+name: iOS Build (free, local)
+
+env:
+  APP_STORE_APP_ID: "6829563284"
+  EXPO_PROJECT_ID: "c746a0c0-43f5-4a6c-88d8-fab46d143a27"
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main, master]
 
 jobs:
   ios:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 90
-    defaults:
-      run:
-        working-directory: .
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-      EXPO_ASC_API_KEY_PATH: /tmp/asc_key.p8
-      EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-      EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-      EXPO_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      EXPO_APPLE_TEAM_TYPE: ${{ secrets.APPLE_TEAM_TYPE || 'INDIVIDUAL' }}
-      EAS_NO_VCS: 1
-      EAS_BUILD_NO_EXPO_GO_WARNING: true
+      EAS_BUILD_NO_EXPO_GO_WARNING: "true"
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
     steps:
-      - name: Get the code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Set up Expo / EAS
-        uses: expo/expo-github-action@v8
-        with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
 
-      - name: Install everything
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install any missing packages
+        run: |
+          cat > /tmp/find-missing.js <<'EOF'
+          const fs = require("fs"), path = require("path");
+          const builtins = new Set(require("module").builtinModules);
+          const found = new Set(["react", "react-native"]);
+          if (fs.existsSync("app.json")) {
+            const cfg = JSON.parse(fs.readFileSync("app.json", "utf8"));
+            for (const p of ((cfg.expo || cfg).plugins || [])) {
+              const n = Array.isArray(p) ? p[0] : p;
+              if (typeof n === "string") found.add(n);
+            }
+          }
+          function walk(d) {
+            for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+              if (["node_modules", ".git", "ios", "android", ".expo"].includes(e.name)) continue;
+              const p = path.join(d, e.name);
+              if (e.isDirectory()) walk(p);
+              else if (/\.(js|jsx|ts|tsx|mjs|cjs)$/.test(e.name)) {
+                const s = fs.readFileSync(p, "utf8");
+                const re = /(?:import\s+(?:[^'"]*?\s+from\s+)?|require\s*\(\s*|import\s*\(\s*|export\s+[^'"]*?\s+from\s+)["']([^"']+)["']/g;
+                let m; while ((m = re.exec(s))) found.add(m[1]);
+              }
+            }
+          }
+          walk(process.cwd());
+          const pkgs = [...found]
+            .filter(n => !n.startsWith(".") && !n.startsWith("/") && !n.startsWith("@/") && !n.startsWith("~") && !n.startsWith("node:"))
+            .map(n => n.startsWith("@") ? n.split("/").slice(0, 2).join("/") : n.split("/")[0])
+            .filter(n => !builtins.has(n) && /^(@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(n));
+          const missing = [...new Set(pkgs)].filter(n => {
+            try { require.resolve(n + "/package.json", { paths: [process.cwd()] }); return false; }
+            catch { return true; }
+          });
+          console.log(missing.join(" "));
+          EOF
+          MISSING=$(node /tmp/find-missing.js)
+          echo "Missing packages: $MISSING"
+          if [ -n "$MISSING" ]; then npx expo install $MISSING; fi
+
+      - name: Fix Expo package versions
+        run: npx expo install --fix
+
+      - name: Link Expo project
+        run: |
+          if [ -n "$EXPO_PROJECT_ID" ]; then
+            eas init --id "$EXPO_PROJECT_ID" --non-interactive --force
+          else
+            eas init --non-interactive --force
+          fi
+
+      - name: Make sure eas.json is set up
+        run: |
+          node -e '
+          const fs = require("fs");
+          const f = "eas.json";
+          const cfg = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : {};
+          cfg.cli = Object.assign({ appVersionSource: "remote" }, cfg.cli || {});
+          cfg.build = cfg.build || {};
+          cfg.build.production = cfg.build.production || { autoIncrement: true };
+          cfg.submit = cfg.submit || {};
+          cfg.submit.production = cfg.submit.production || {};
+          cfg.submit.production.ios = Object.assign(cfg.submit.production.ios || {}, {
+            ascAppId: process.env.APP_STORE_APP_ID,
+            ascApiKeyPath: process.env.GITHUB_WORKSPACE + "/asc-key.p8",
+            ascApiKeyId: process.env.ASC_KEY_ID,
+            ascApiKeyIssuerId: process.env.ASC_ISSUER_ID
+          });
+          fs.writeFileSync(f, JSON.stringify(cfg, null, 2));
+          '
+          printf '%s\n' "$ASC_KEY_P8" > "$GITHUB_WORKSPACE/asc-key.p8"
+
+      - name: Check Expo config
+        run: npx expo config --json
+
+      - name: Build iOS locally on runner
+        run: eas build --platform ios --profile production --local --non-interactive --output ${{ github.workspace }}/build.ipa
+
+      - name: Save .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build
+          path: build.ipa
+
+      - name: Submit to App Store Connect
+        run: eas submit --platform ios --profile production --path ${{ github.workspace }}/build.ipa --non-interactive      - name: Install everything
         run: |
           npm install
           npm run setup || echo "Skipped Expo's broken plugin step"
