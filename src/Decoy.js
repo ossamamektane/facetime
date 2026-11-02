@@ -1,6 +1,6 @@
-// The screen anyone sees when they open the app: a look-alike of Apple's FaceTime app.
-// Everything on it works like FaceTime (New FaceTime and the recent calls really call through
-// Apple's FaceTime). The real app is behind it: hold the big "FaceTime" title for 1 second.
+// The screen anyone sees when they open the app: looks like Apple's FaceTime app, titled with the
+// app's own name (APP). Everything on it really works (New FaceTime and the recent calls call through
+// Apple's FaceTime). The real app is behind it: hold the big title for 1 second.
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert, Keyboard, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions,
@@ -8,22 +8,25 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SymbolView } from "expo-symbols";
 
+// Must match "name" in app.json. The call screen shows it too: "Mobile Audio".
+const APP = "Mobile";
+
 const WORDS = {
   en: {
-    edit: "Edit", done: "Done", link: "Create Link", newFt: "New FaceTime", audio: "FaceTime Audio",
+    edit: "Edit", done: "Done", link: "Create Link", newFt: "New FaceTime", audio: APP + " Audio",
     yesterday: "Yesterday", cancel: "Cancel", to: "To:", ok: "OK",
     noLink: "Couldn\u2019t Create Link", noLinkMsg: "Check your internet connection and try again.",
     days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
   },
   fr: {
-    edit: "Modifier", done: "OK", link: "Cr\u00e9er un lien", newFt: "Nouveau FaceTime", audio: "FaceTime audio",
+    edit: "Modifier", done: "OK", link: "Cr\u00e9er un lien", newFt: "Nouveau FaceTime", audio: APP + " audio",
     yesterday: "Hier", cancel: "Annuler", to: "\u00c0\u00a0:", ok: "OK",
     noLink: "Impossible de cr\u00e9er le lien", noLinkMsg: "V\u00e9rifiez votre connexion Internet, puis r\u00e9essayez.",
     days: ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"],
   },
   ar: {
     edit: "\u062a\u0639\u062f\u064a\u0644", done: "\u062a\u0645", link: "\u0625\u0646\u0634\u0627\u0621 \u0631\u0627\u0628\u0637",
-    newFt: "FaceTime \u062c\u062f\u064a\u062f", audio: "FaceTime \u0635\u0648\u062a\u064a",
+    newFt: "FaceTime \u062c\u062f\u064a\u062f", audio: APP + " \u0635\u0648\u062a\u064a",
     yesterday: "\u0623\u0645\u0633", cancel: "\u0625\u0644\u063a\u0627\u0621", to: "\u0625\u0644\u0649:", ok: "\u062d\u0633\u0646\u064b\u0627",
     noLink: "\u062a\u0639\u0630\u0631 \u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u0631\u0627\u0628\u0637",
     noLinkMsg: "\u062a\u062d\u0642\u0642 \u0645\u0646 \u0627\u062a\u0635\u0627\u0644\u0643 \u0628\u0627\u0644\u0625\u0646\u062a\u0631\u0646\u062a \u0648\u062d\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062e\u0631\u0649.",
@@ -204,7 +207,7 @@ export default function Decoy({ info, dark, onUnlock, onDelete }) {
       >
         <View style={{ paddingHorizontal: side, flexDirection: row }}>
           <Pressable onLongPress={onUnlock} delayLongPress={1000} accessibilityRole="header">
-            <Text style={[s.title, { color: c.text }]} allowFontScaling={false}>FaceTime</Text>
+            <Text style={[s.title, { color: c.text }]} allowFontScaling={false}>{APP}</Text>
           </Pressable>
         </View>
         <View style={[s.btnRow, { paddingHorizontal: side, flexDirection: row }]}>

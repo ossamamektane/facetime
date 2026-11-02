@@ -273,7 +273,7 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
   }
 
   /// The phone kept the app asleep past the planned time: it counts as a missed call
-  /// (the "Missed FaceTime Audio" notice planned with it shows up by itself).
+  /// (the "Missed Call" notice planned with it shows up by itself).
   private func lateMiss(_ pending: [String: Any]) {
     store.removeObject(forKey: kPending)
     disarm()
@@ -415,7 +415,7 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
     return p
   }
 
-  // the little FaceTime camera shown on the call screen's app button
+  // the little camera (same as the app icon) shown on the call screen's app button
   private static func templateIcon() -> Data? {
     let conf = UIImage.SymbolConfiguration(pointSize: 26, weight: .regular)
     guard let symbol = UIImage(systemName: "video.fill", withConfiguration: conf)?
@@ -613,18 +613,12 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
 
   // MARK: - Missed-call notices
 
-  private func appName() -> String {
-    let name = (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
-      ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? "FaceTime"
-    return name.isEmpty ? "FaceTime" : name
-  }
-
+  // Same wording as the iPhone's own missed-call notice; the app's name and icon show above it.
   private func missedTitle() -> String {
-    let app = appName()
     switch lang() {
-    case "fr": return "Appel " + app + " audio manqué"
-    case "ar": return "مكالمة " + app + " صوتية فائتة"
-    default: return "Missed " + app + " Audio"
+    case "fr": return "Appel manqué"
+    case "ar": return "مكالمة فائتة"
+    default: return "Missed Call"
     }
   }
 
@@ -651,7 +645,7 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
     UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
   }
 
-  // MARK: - Recent calls (shown on the FaceTime screen)
+  // MARK: - Recent calls (shown on the app's cover screen)
 
   private func history() -> [[String: Any]] {
     return (store.array(forKey: kHistory) as? [[String: Any]]) ?? []

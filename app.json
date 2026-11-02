@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "FaceTime",
+    "name": "Mobile",
     "slug": "calls",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -18,11 +18,17 @@
       },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "UIBackgroundModes": ["audio", "voip"],
+        "UIBackgroundModes": [
+          "audio",
+          "voip"
+        ],
         "NSMicrophoneUsageDescription": "Used during calls.",
         "NSCameraUsageDescription": "Used to take photos.",
         "NSPhotoLibraryUsageDescription": "Used to choose photos.",
-        "NSUserActivityTypes": ["INStartCallIntent", "INStartAudioCallIntent"]
+        "NSUserActivityTypes": [
+          "INStartCallIntent",
+          "INStartAudioCallIntent"
+        ]
       }
     },
     "plugins": [
