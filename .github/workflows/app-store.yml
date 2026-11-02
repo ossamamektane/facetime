@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 90
     defaults:
       run:
-        working-directory: calls
+        working-directory: .
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       EXPO_ASC_API_KEY_PATH: /tmp/asc_key.p8
