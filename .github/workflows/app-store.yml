@@ -40,7 +40,7 @@ jobs:
           npm run setup || echo "Skipped Expo's broken plugin step"
           npx expo install expo-font || echo "ok"
           npx expo install expo-system-ui || echo "ok"
-          node -e "for (const m of ['react','react-native','react-native-webview','expo-file-system','expo-splash-screen','expo-status-bar','expo-system-ui','expo-font','expo-symbols','react-native-safe-area-context','expo-modules-core']) { require.resolve(m + '/package.json'); console.log('ok', m); }"
+          node -e "const fs = require('fs'); for (const m of ['react','react-native','react-native-webview','expo-file-system','expo-splash-screen','expo-status-bar','expo-system-ui','expo-font','expo-symbols','react-native-safe-area-context','expo-modules-core']) { if (!fs.existsSync('node_modules/' + m + '/package.json')) { console.error('MISSING', m); process.exit(1); } console.log('ok', m); }"
 
       - name: Put the call page inside the app
         run: node scripts/make-web.js
