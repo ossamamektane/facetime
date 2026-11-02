@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Mobile",
+    "name": "FacеTime",
     "slug": "calls",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -44,7 +44,8 @@
           }
         }
       ],
-      "./plugins/with-quick-call"
+      "./plugins/with-quick-call",
+      "./plugins/with-call-sounds"
     ]
   }
 }

@@ -13,7 +13,7 @@ Pod::Spec.new do |s|
   s.swift_version  = '5.4'
 
   s.dependency 'ExpoModulesCore'
-  s.frameworks = 'CallKit', 'AVFoundation', 'UserNotifications', 'Intents', 'UIKit'
+  s.frameworks = 'CallKit', 'AVFoundation', 'AudioToolbox', 'UserNotifications', 'Intents', 'UIKit'
 
   # Swift/Objective-C compatibility
   s.pod_target_xcconfig = {

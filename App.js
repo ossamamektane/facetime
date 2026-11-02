@@ -1,7 +1,8 @@
 // The phone app. Opening it shows a FaceTime look-alike (src/Decoy.js). Hold the big "FaceTime"
 // title for 1 second to get to the real app: the same page as the website (bundled inside, works
 // offline). "Start call" is handed to iOS itself (modules/fake-call), so the call rings on the real
-// iPhone call screen with your own ringtone, even locked, in your pocket or with the app closed.
+// iPhone call screen with your ringtone, even locked, in your pocket or with the app closed.
+// While a call is going on, opening the app shows its call screen (src/InCall.js).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, Keyboard, Linking, StyleSheet, View, useColorScheme } from "react-native";
 import { WebView } from "react-native-webview";
@@ -16,6 +17,7 @@ import { preScript } from "./src/pre";
 import { applyChange, flushStore, getStore, loadStore } from "./src/store";
 import FakeCall, { onCallEvent } from "./src/fakecall";
 import Decoy from "./src/Decoy";
+import InCall from "./src/InCall";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -48,6 +50,10 @@ function Main() {
   const [page, setPage] = useState(0); // bump = rebuild + reload the page
   const [locked, setLockedState] = useState(true);
   const [info, setInfo] = useState(null); // from iOS: planned call, quick call, recent calls, language
+  const [call, setCall] = useState(null); // the call going on right now (shown on the call screen)
+  const [ended, setEnded] = useState(false); // "Call Ended" showing
+  const callRef = useRef(null);
+  const endingRef = useRef(false);
 
   const hideSplash = useCallback(() => {
     if (splashDone.current) return;
@@ -82,19 +88,52 @@ function Main() {
     }
   }, []);
 
+  /* ---------- the call screen ---------- */
+  const showCall = useCallback((c) => {
+    callRef.current = c;
+    setCall(c);
+  }, []);
+  const patchCall = useCallback((p) => {
+    if (callRef.current) showCall(Object.assign({}, callRef.current, p));
+  }, [showCall]);
+  const closeCall = useCallback(() => {
+    endingRef.current = false;
+    setEnded(false);
+    showCall(null);
+  }, [showCall]);
+  // the call is over: "Call Ended" for a moment (only if you're looking at it)
+  const callOver = useCallback(() => {
+    if (!callRef.current) return;
+    if (AppState.currentState !== "active") {
+      closeCall();
+      return;
+    }
+    if (endingRef.current) return;
+    endingRef.current = true;
+    setEnded(true);
+  }, [closeCall]);
+  const syncCall = useCallback((c) => {
+    if (c && c.state === "active") {
+      if (!endingRef.current) showCall(Object.assign({}, callRef.current || {}, c));
+    } else if (callRef.current && !endingRef.current) {
+      callOver();
+    }
+  }, [showCall, callOver]);
+
   const refresh = useCallback(async () => {
     if (!FakeCall) return null;
     try {
       const st = await FakeCall.status();
       if (st) {
         setInfo(st);
+        syncCall(st.call || null);
         send(`window.__fc&&__fc.status(${jsArg(st)})`);
       }
       return st || null;
     } catch (e) {
       return null;
     }
-  }, [send]);
+  }, [send, syncCall]);
 
   useEffect(() => {
     refresh().then(() => setTimeout(hideSplash, 60));
@@ -127,11 +166,48 @@ function Main() {
       onCallEvent((e) => {
         if (!e || !e.type) return;
         if (e.type === "ringing") setLocked(true); // after the call, the app opens on FaceTime
+        if (e.type === "answered" && e.call) {
+          endingRef.current = false;
+          setEnded(false);
+          showCall(e.call);
+        } else if (e.type === "muted") patchCall({ muted: !!e.muted });
+        else if (e.type === "route") patchCall({ speaker: !!e.speaker });
+        else if (e.type === "ended" || e.type === "missed" || e.type === "failed") callOver();
+        if (e.type === "muted" || e.type === "route") return;
         send(`window.__fc&&__fc.event(${jsArg(e)})`);
         if (e.type !== "scheduled" && e.type !== "ringing" && e.type !== "answered") refresh();
       }),
-    [send, refresh, setLocked]
+    [send, refresh, setLocked, showCall, patchCall, callOver]
   );
+
+  /* ---------- the call screen's buttons ---------- */
+  const endIt = useCallback(() => {
+    callOver();
+    try { if (FakeCall && FakeCall.endCall) FakeCall.endCall().catch(() => {}); } catch (e) {}
+  }, [callOver]);
+  const toggleSpeaker = useCallback(() => {
+    const c = callRef.current;
+    if (!c || !FakeCall || !FakeCall.setSpeaker) return;
+    const next = !c.speaker;
+    patchCall({ speaker: next });
+    Promise.resolve()
+      .then(() => FakeCall.setSpeaker(next))
+      .then((ok) => { if (!ok) patchCall({ speaker: !next }); })
+      .catch(() => patchCall({ speaker: !next }));
+  }, [patchCall]);
+  const toggleMute = useCallback(() => {
+    const c = callRef.current;
+    if (!c || !FakeCall || !FakeCall.setMuted) return;
+    const next = !c.muted;
+    patchCall({ muted: next });
+    Promise.resolve()
+      .then(() => FakeCall.setMuted(next))
+      .then((ok) => { if (!ok) patchCall({ muted: !next }); })
+      .catch(() => patchCall({ muted: !next }));
+  }, [patchCall]);
+  const digit = useCallback((k) => {
+    try { if (FakeCall && FakeCall.playDigit) FakeCall.playDigit(String(k)); } catch (e) {}
+  }, []);
 
   /* ---------- the app goes to the background / comes back ---------- */
   useEffect(() => {
@@ -140,12 +216,13 @@ function Main() {
         refresh();
         return;
       }
+      if (endingRef.current) closeCall();
       // leaving the app (home, app switcher, lock button): back to the FaceTime cover
       if (s === "background" || Date.now() >= quietUntil.current) setLocked(true);
       flush();
     });
     return () => sub.remove();
-  }, [refresh, setLocked, flush]);
+  }, [refresh, setLocked, flush, closeCall]);
 
   /* ---------- requests from the page ---------- */
   const reply = (id, r) => {
@@ -197,6 +274,8 @@ function Main() {
             cid: String(m.cid || ""),
             voice: m.voice ? String(m.voice) : "",
             hangup: m.hangup ? String(m.hangup) : "",
+            ring: m.ring ? String(m.ring) : "", // your own ringtone (none = the iPhone's ringtone)
+            ringNew: !!m.ringNew, // just picked: try it even if iPhone stopped an earlier one
           };
           const r = m.op === "call" ? await FakeCall.schedule(opts) : await FakeCall.saveQuick(opts);
           reply(id, r || {});
@@ -245,7 +324,7 @@ function Main() {
   const pageBg = dark ? "#000000" : "#F2F2F7";
   return (
     <View style={[styles.root, { backgroundColor: dark ? "#000000" : "#FFFFFF" }]}>
-      <StatusBar style={dark ? "light" : "dark"} />
+      <StatusBar style={call || dark ? "light" : "dark"} />
       <View
         style={styles.root}
         pointerEvents={locked ? "none" : "auto"}
@@ -292,6 +371,18 @@ function Main() {
         )}
       </View>
       {locked && <Decoy info={info} dark={dark} onUnlock={unlock} onDelete={deleteRecent} />}
+      {call && (
+        <InCall
+          call={call}
+          ended={ended}
+          lang={(info && info.lang) || "en"}
+          onEnd={endIt}
+          onSpeaker={toggleSpeaker}
+          onMute={toggleMute}
+          onDigit={digit}
+          onClosed={closeCall}
+        />
+      )}
     </View>
   );
 }

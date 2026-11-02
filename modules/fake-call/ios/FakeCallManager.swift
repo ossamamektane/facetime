@@ -1,7 +1,10 @@
 // The heart of the app: plans a call, then makes it ring on the real iPhone call screen (CallKit),
-// so it looks, sounds and vibrates exactly like a real call: your own ringtone, the silent switch,
-// Focus, the lock screen, earpiece / speaker / AirPods (all handled by iOS itself).
+// so it looks and vibrates exactly like a real call, on the lock screen too.
+// Ringtone: your own (a file or a link picked in the app, played by the app itself, so it also rings
+// on silent) or the iPhone's own ringtone (follows the silent switch).
 // When you answer, the voice recording plays; when it ends, the hang-up sound plays and the call ends.
+// The app's own call screen (speaker / mute / keypad / end) talks to the call through here too.
+import AudioToolbox
 import AVFoundation
 import CallKit
 import Foundation
@@ -23,9 +26,13 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
   private let kPending = "fc.pending"
   private let kQuick = "fc.quick"
   private let kHistory = "fc.history"
+  private let kRingFail = "fc.ringFail" // a ringtone iPhone wouldn't let the app play during a call
+  private static let quietTone = "fc-quiet.caf" // silent, inside the app: iPhone rings with it while the app plays your ringtone
   private static let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 
   private var provider: CXProvider?
+  private var quietConfig = false
+  private lazy var controller = CXCallController()
 
   // waiting for a planned call
   private var timer: DispatchSourceTimer?
@@ -51,6 +58,10 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
   private var hangFallback: DispatchWorkItem?
   private var voicePlayer: AVAudioPlayer?
   private var hangPlayer: AVAudioPlayer?
+  private var ringPlayer: AVAudioPlayer?
+  private var ringKey = ""
+  private var ringRetry: DispatchWorkItem?
+  private var muted = false
 
   private override init() {
     super.init()
@@ -61,6 +72,7 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
 
   @discardableResult
   public func schedule(_ opts: [String: Any]) -> [String: Any] {
+    forgetRingFail(opts)
     var info = clean(opts)
     let delay = clampDelay(opts["delay"])
     let id = UUID().uuidString
@@ -98,12 +110,20 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
 
   @discardableResult
   public func saveQuick(_ opts: [String: Any]) -> [String: Any] {
+    forgetRingFail(opts)
     var quick = clean(opts)
     let delay = clampDelay(opts["delay"])
     quick["delay"] = delay
     store.set(quick, forKey: kQuick)
     let result: [String: Any] = ["name": quick["name"] as? String ?? "", "delay": delay]
     return result
+  }
+
+  // a ringtone you just picked gets a fresh try, even if iPhone stopped one before
+  private func forgetRingFail(_ opts: [String: Any]) {
+    if let fresh = opts["ringNew"] as? Bool, fresh {
+      store.removeObject(forKey: kRingFail)
+    }
   }
 
   /// Back Tap / Shortcuts "Quick Call": plays the saved quick call.
@@ -139,7 +159,90 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
       result["quick"] = q
     }
     result["history"] = history()
+    if let call = callState() {
+      result["call"] = call
+    }
+    result["ringFail"] = store.string(forKey: kRingFail) ?? ""
     return result
+  }
+
+  /// The call going on right now, for the app's own call screen.
+  private func callState() -> [String: Any]? {
+    guard callId != nil else { return nil }
+    var c: [String: Any] = [:]
+    c["name"] = callInfo["name"] as? String ?? ""
+    c["handle"] = callInfo["handle"] as? String ?? ""
+    c["state"] = phase == .ringing ? "ringing" : "active"
+    if let at = answeredAt {
+      c["answeredAt"] = at.timeIntervalSince1970 * 1000
+    }
+    c["muted"] = muted
+    c["speaker"] = phase != .ringing && audioActive ? speakerOn() : false
+    c["held"] = onHold
+    return c
+  }
+
+  // MARK: - The app's own call screen: end / mute / speaker / keypad
+
+  public func endCall(_ done: @escaping (Bool) -> Void) {
+    guard let uuid = callId else {
+      done(false)
+      return
+    }
+    controller.request(CXTransaction(action: CXEndCallAction(call: uuid))) { [weak self] error in
+      DispatchQueue.main.async {
+        guard let self = self else { return }
+        if error != nil, self.callId == uuid {
+          self.getProvider().reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
+          self.finishCall(missed: self.phase == .ringing, event: "ended")
+        }
+        done(true)
+      }
+    }
+  }
+
+  public func setMuted(_ on: Bool, _ done: @escaping (Bool) -> Void) {
+    guard let uuid = callId, phase != .ringing else {
+      done(false)
+      return
+    }
+    controller.request(CXTransaction(action: CXSetMutedCallAction(call: uuid, muted: on))) { [weak self] error in
+      DispatchQueue.main.async {
+        guard let self = self else { return }
+        if error != nil, self.callId == uuid {
+          // iOS didn't take it: the app's screen still shows it (the voice is a recording anyway)
+          self.muted = on
+          self.emit(["type": "muted", "muted": on])
+        }
+        done(true)
+      }
+    }
+  }
+
+  @discardableResult
+  public func setSpeaker(_ on: Bool) -> Bool {
+    guard callId != nil, phase != .ringing else { return false }
+    do {
+      try AVAudioSession.sharedInstance().overrideOutputAudioPort(on ? .speaker : .none)
+    } catch {
+      return false
+    }
+    emit(["type": "route", "speaker": speakerOn()])
+    return true
+  }
+
+  /// The keypad's key tones (same ones as the iPhone's call keypad).
+  public func playDigit(_ key: String) {
+    let tones: [String: UInt32] = [
+      "0": 1200, "1": 1201, "2": 1202, "3": 1203, "4": 1204, "5": 1205,
+      "6": 1206, "7": 1207, "8": 1208, "9": 1209, "*": 1210, "#": 1211,
+    ]
+    guard let id = tones[key] else { return }
+    AudioServicesPlaySystemSound(SystemSoundID(id))
+  }
+
+  private func speakerOn() -> Bool {
+    return AVAudioSession.sharedInstance().currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
   }
 
   @discardableResult
@@ -346,12 +449,26 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
     let nc = NotificationCenter.default
     nc.addObserver(self, selector: #selector(audioInterrupted(_:)), name: AVAudioSession.interruptionNotification, object: nil)
     nc.addObserver(self, selector: #selector(mediaReset(_:)), name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+    nc.addObserver(self, selector: #selector(routeChanged(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
+  }
+
+  // speaker / AirPods switched (from the app's screen, the iPhone call screen or Control Center)
+  @objc private func routeChanged(_ note: Notification) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self, self.callId != nil, self.phase != .ringing, self.audioActive else { return }
+      self.emit(["type": "route", "speaker": self.speakerOn()])
+    }
   }
 
   @objc private func audioInterrupted(_ note: Notification) {
     let raw = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue ?? 0
     DispatchQueue.main.async { [weak self] in
-      guard let self = self, self.keepAlive, self.callId == nil else { return }
+      guard let self = self else { return }
+      if self.ringPlayer != nil && self.phase == .ringing {
+        self.ringInterrupted(began: raw == AVAudioSession.InterruptionType.began.rawValue)
+        return
+      }
+      guard self.keepAlive, self.callId == nil else { return }
       if raw == AVAudioSession.InterruptionType.ended.rawValue {
         self.keepPlayer?.stop()
         self.keepPlayer = nil
@@ -362,7 +479,13 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
 
   @objc private func mediaReset(_ note: Notification) {
     DispatchQueue.main.async { [weak self] in
-      guard let self = self, self.keepAlive, self.callId == nil else { return }
+      guard let self = self else { return }
+      if self.ringPlayer != nil {
+        self.ringPlayer = nil
+        self.ringRetry?.cancel()
+        self.ringRetry = nil
+      }
+      guard self.keepAlive, self.callId == nil else { return }
       self.keepPlayer = nil
       self.startKeepAlive()
     }
@@ -402,6 +525,16 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
 
   private func getProvider() -> CXProvider {
     if let p = provider { return p }
+    let p = CXProvider(configuration: makeConfig(quiet: false))
+    p.setDelegate(self, queue: nil)
+    provider = p
+    quietConfig = false
+    return p
+  }
+
+  // quiet = iPhone rings with a silent sound (the app plays your own ringtone);
+  // otherwise it rings with the iPhone's own ringtone
+  private func makeConfig(quiet: Bool) -> CXProviderConfiguration {
     let config = CXProviderConfiguration()
     config.supportsVideo = false
     config.maximumCallGroups = 1
@@ -409,10 +542,97 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
     config.supportedHandleTypes = [.phoneNumber, .emailAddress, .generic]
     config.includesCallsInRecents = true
     config.iconTemplateImageData = FakeCallManager.templateIcon()
-    let p = CXProvider(configuration: config)
-    p.setDelegate(self, queue: nil)
-    provider = p
-    return p
+    if quiet {
+      config.ringtoneSound = FakeCallManager.quietTone
+    }
+    return config
+  }
+
+  private func useQuietRing(_ quiet: Bool) {
+    let p = getProvider()
+    if quietConfig == quiet { return }
+    p.configuration = makeConfig(quiet: quiet)
+    quietConfig = quiet
+  }
+
+  private static func hasQuietTone() -> Bool {
+    return Bundle.main.url(forResource: "fc-quiet", withExtension: "caf") != nil
+  }
+
+  // MARK: - Your own ringtone
+
+  private func startRing(_ url: URL) -> Bool {
+    observeAudio()
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+      try session.setActive(true, options: [])
+    } catch {
+      return false
+    }
+    guard let player = try? AVAudioPlayer(contentsOf: url) else { return false }
+    player.numberOfLoops = -1
+    player.volume = 1
+    player.prepareToPlay()
+    guard player.play() else { return false }
+    ringPlayer = player
+    return true
+  }
+
+  /// release: hand the sound back (only when the call itself isn't using it).
+  /// false = the sound was still busy and couldn't be handed back yet
+  @discardableResult
+  private func stopRing(release: Bool, notify: Bool) -> Bool {
+    ringRetry?.cancel()
+    ringRetry = nil
+    guard let player = ringPlayer else { return true }
+    ringPlayer = nil
+    player.stop()
+    if release && !audioActive {
+      do {
+        try AVAudioSession.sharedInstance().setActive(false, options: notify ? [.notifyOthersOnDeactivation] : [])
+      } catch {
+        return false
+      }
+    }
+    return true
+  }
+
+  // iPhone stopped the ringtone (another sound took over): try to get it back once,
+  // and if iPhone won't allow it, the next calls ring with the iPhone ringtone instead
+  private func ringInterrupted(began: Bool) {
+    guard let uuid = callId, let player = ringPlayer else { return }
+    if !began {
+      _ = resumeRing(player)
+      return
+    }
+    ringRetry?.cancel()
+    let key = ringKey
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self, self.callId == uuid, self.phase == .ringing, let p = self.ringPlayer else { return }
+      self.ringRetry = nil
+      if !self.resumeRing(p) {
+        self.ringBlocked(key)
+      }
+    }
+    ringRetry = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+  }
+
+  private func resumeRing(_ player: AVAudioPlayer) -> Bool {
+    do {
+      try AVAudioSession.sharedInstance().setActive(true, options: [])
+    } catch {
+      return false
+    }
+    return player.isPlaying || player.play()
+  }
+
+  private func ringBlocked(_ key: String) {
+    if !key.isEmpty {
+      store.set(key, forKey: kRingFail)
+    }
+    emit(["type": "ringBlocked"])
   }
 
   // the little camera (same as the app icon) shown on the call screen's app button
@@ -460,13 +680,25 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
     }
     beginCallTask()
     endWait()
-    stopKeepAlive()
+    // your own ringtone (played by the app; iPhone rings with a silent sound meanwhile)
+    let ring = info["ring"] as? String ?? ""
+    var ringURL: URL? = nil
+    if !ring.isEmpty && ring != (store.string(forKey: kRingFail) ?? "") && FakeCallManager.hasQuietTone() {
+      ringURL = soundURL(ring)
+    }
+    if ringURL == nil {
+      stopKeepAlive() // iPhone's own ringtone: the app hands the sound back first
+    }
+    observeAudio()
+    useQuietRing(ringURL != nil)
     let uuid = UUID()
     callId = uuid
     callInfo = info
     phase = .ringing
     answeredAt = nil
     onHold = false
+    muted = false
+    ringKey = ringURL != nil ? ring : ""
     let name = info["name"] as? String ?? ""
     let update = CXCallUpdate()
     update.remoteHandle = handle(for: info)
@@ -486,15 +718,39 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
             self.callId = nil
             self.callInfo = [:]
             self.phase = .idle
+            self.ringKey = ""
           }
           self.addHistory(info, dur: 0, missed: true)
           if code != 4 { self.postMissed(info) }
+          self.keepAlive = false
+          self.keepPlayer?.stop()
+          self.keepPlayer = nil
+          if ringURL != nil {
+            try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+          }
           self.emit(["type": "failed", "code": code, "name": name])
           self.endCallTask()
           self.restore()
           return
         }
-        self.emit(["type": "ringing", "name": name])
+        let live = self.callId == uuid && self.phase == .ringing
+        if let url = ringURL {
+          let ok = live && self.startRing(url)
+          self.keepAlive = false
+          self.keepPlayer?.stop()
+          self.keepPlayer = nil
+          if !ok && !self.audioActive {
+            try? AVAudioSession.sharedInstance().setActive(false, options: live ? [] : [.notifyOthersOnDeactivation])
+          }
+          if live && !ok {
+            self.ringKey = ""
+            self.ringBlocked(ring)
+          }
+        }
+        guard live else { return }
+        var ev: [String: Any] = ["type": "ringing", "name": name]
+        if let call = self.callState() { ev["call"] = call }
+        self.emit(ev)
         self.startRingTimeout(uuid)
       }
     }
@@ -593,6 +849,7 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
     voicePlayer = nil
     hangPlayer?.stop()
     hangPlayer = nil
+    stopRing(release: true, notify: true)
     let dur = answeredAt.map { Date().timeIntervalSince($0) } ?? 0
     addHistory(callInfo, dur: missed ? 0 : dur, missed: missed)
     let name = callInfo["name"] as? String ?? ""
@@ -601,6 +858,8 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
     phase = .idle
     answeredAt = nil
     onHold = false
+    muted = false
+    ringKey = ""
     emit(["type": event, "name": name])
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
       self?.restore()
@@ -684,6 +943,8 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
     if !voice.isEmpty { r["voice"] = voice }
     let hangup = safeName(text(o["hangup"], 120))
     if !hangup.isEmpty { r["hangup"] = hangup }
+    let ring = safeName(text(o["ring"], 120))
+    if !ring.isEmpty { r["ring"] = ring }
     return r
   }
 
@@ -737,6 +998,7 @@ public final class FakeCallManager: NSObject, @unchecked Sendable {
 
 extension FakeCallManager: CXProviderDelegate {
   public func providerDidReset(_ provider: CXProvider) {
+    stopRing(release: true, notify: true)
     audioActive = false
     if callId != nil {
       finishCall(missed: phase == .ringing, event: "ended")
@@ -750,11 +1012,23 @@ extension FakeCallManager: CXProviderDelegate {
     }
     ringTimeout?.cancel()
     ringTimeout = nil
+    // your ringtone stops and the sound goes back to iOS, which opens it for the call
+    let freed = stopRing(release: true, notify: false)
     phase = .waiting
     answeredAt = Date()
-    configureCallAudio()
-    action.fulfill()
-    emit(["type": "answered", "name": callInfo["name"] as? String ?? ""])
+    if freed {
+      configureCallAudio()
+      action.fulfill()
+    } else {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+        try? AVAudioSession.sharedInstance().setActive(false, options: [])
+        self?.configureCallAudio()
+        action.fulfill()
+      }
+    }
+    var ev: [String: Any] = ["type": "answered", "name": callInfo["name"] as? String ?? ""]
+    if let call = callState() { ev["call"] = call }
+    emit(ev)
     if audioActive { startVoice(after: 0.7) }
   }
 
@@ -781,6 +1055,10 @@ extension FakeCallManager: CXProviderDelegate {
   }
 
   public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+    if action.callUUID == callId {
+      muted = action.isMuted
+      emit(["type": "muted", "muted": muted])
+    }
     action.fulfill()
   }
 
@@ -793,7 +1071,11 @@ extension FakeCallManager: CXProviderDelegate {
   }
 
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+    stopRing(release: false, notify: false)
     audioActive = true
+    if callId != nil && phase != .ringing {
+      emit(["type": "route", "speaker": speakerOn()])
+    }
     switch phase {
     case .waiting:
       if voiceStart == nil { startVoice(after: 0.7) }

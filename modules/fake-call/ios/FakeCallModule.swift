@@ -21,7 +21,7 @@ public class FakeCallModule: Module {
       }
     }
 
-    // Plan a call: { name, handle, delay (seconds), cid, voice, hangup } -> { due, id, name }
+    // Plan a call: { name, handle, delay (seconds), cid, voice, hangup, ring } -> { due, id, name }
     AsyncFunction("schedule") { (opts: [String: Any]) -> [String: Any] in
       return FakeCallManager.shared.schedule(opts)
     }.runOnQueue(.main)
@@ -49,6 +49,27 @@ public class FakeCallModule: Module {
         promise.resolve(result)
       }
     }.runOnQueue(.main)
+
+    // The app's own call screen
+    AsyncFunction("endCall") { (promise: Promise) in
+      FakeCallManager.shared.endCall { ok in
+        promise.resolve(ok)
+      }
+    }.runOnQueue(.main)
+
+    AsyncFunction("setMuted") { (on: Bool, promise: Promise) in
+      FakeCallManager.shared.setMuted(on) { ok in
+        promise.resolve(ok)
+      }
+    }.runOnQueue(.main)
+
+    AsyncFunction("setSpeaker") { (on: Bool) -> Bool in
+      return FakeCallManager.shared.setSpeaker(on)
+    }.runOnQueue(.main)
+
+    Function("playDigit") { (key: String) in
+      FakeCallManager.shared.playDigit(key)
+    }
 
     // Sound files sent over by the page, in pieces
     Function("fileSize") { (name: String) -> Double in

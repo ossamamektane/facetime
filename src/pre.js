@@ -1,6 +1,6 @@
 // A small script that runs inside the page before the page's own code, only in the app.
 // - tells the page it is inside the iPhone app (window.__NATIVE), so "Start call" goes to iOS itself
-// - the ringtone is the iPhone's own ringtone, so the page never asks for one
+// - the ringtone is your own pick (a file or a link) or, when there's none, the iPhone's own
 // - the built-in sounds (hang-up) come from inside the app, never from the internet
 import { jsArg } from "./shim";
 
@@ -13,12 +13,13 @@ export function preScript(sounds, sig) {
   try { BASE = new URL("./", location.href).href; } catch (e) {}
   var SOUNDS = BASE + "sounds/";
 
-  /* the ringtone is your iPhone's own ringtone */
+  /* the ringtone: your own pick (a file or a link) stays; otherwise it's the iPhone's own */
   try {
     var K = "ph.cfg.v2", c = JSON.parse(localStorage.getItem(K) || "{}");
-    if (c.ringFile !== "native") {
+    var f = c.ringFile || "";
+    if (!f || f === "mem" || f === SOUNDS + "ringtone.mp3") {
       c.ringFile = "native";
-      c.ringName = "iPhone ringtone";
+      c.ringName = "iPhone Ringtone";
       c.ring = true;
       localStorage.setItem(K, JSON.stringify(c));
     }
