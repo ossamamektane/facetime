@@ -428,7 +428,7 @@ const s = StyleSheet.create({
   bigTxt: { flexShrink: 1, fontSize: 17, fontWeight: "600", letterSpacing: -0.41 },
   rowWrap: { alignItems: "stretch" },
   avatar: { width: 45, height: 45, borderRadius: 22.5, overflow: "hidden" },
-  avatarIn: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
+  avatarIn: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, alignItems: "center", justifyContent: "center" },
   avatarTxt: { color: "#FFFFFF", fontSize: 19, fontWeight: "600", letterSpacing: 0.3 },
   rowBody: { flex: 1, alignItems: "center", borderBottomWidth: StyleSheet.hairlineWidth },
   name: { fontSize: 17, fontWeight: "600", letterSpacing: -0.41 },
